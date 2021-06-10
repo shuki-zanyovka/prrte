@@ -49,6 +49,8 @@ if PRTE_ENABLE_MAN_PAGES
 man_MANS = $(man_pages_from_md)
 endif
 
+prte_libucx_LIBS=-lucs -lucp -lucg
+
 dist_prtedata_DATA = help-prun.txt
 
 prun_SOURCES = \
@@ -58,6 +60,7 @@ prun_SOURCES = \
 
 prun_LDADD = \
     $(PRTE_EXTRA_LTLIB) \
+    $(prte_libucx_LIBS) \
     $(prte_libevent_LIBS) \
     $(prte_hwloc_LIBS) \
     $(prte_pmix_LIBS) \

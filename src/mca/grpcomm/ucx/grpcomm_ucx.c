@@ -8,6 +8,7 @@
  * Copyright (c) 2014-2020 Intel, Inc.  All rights reserved.
  * Copyright (c) 2014-2017 Research Organization for Information Science
  *                         and Technology (RIST). All rights reserved.
+ * Copyright (C) Huawei Technologies Co., Ltd. 2021.  ALL RIGHTS RESERVED.
  * $COPYRIGHT$
  *
  * Additional copyrights may follow
@@ -39,6 +40,8 @@
 
 #include "src/mca/grpcomm/base/base.h"
 
+#include "ucp/api/ucp.h"
+#include "ucg/api/ucg.h"
 
 /* Static API's */
 static int init(void);

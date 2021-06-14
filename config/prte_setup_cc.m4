@@ -390,6 +390,7 @@ AC_DEFUN([PRTE_SETUP_CC],[
 
         CFLAGS_orig="$CFLAGS"
         CFLAGS="$CFLAGS_orig -fno-strict-aliasing"
+
         add=
         AC_CACHE_CHECK([if $CC supports -fno-strict-aliasing],
                    [prte_cv_cc_fno_strict_aliasing],
@@ -400,11 +401,13 @@ AC_DEFUN([PRTE_SETUP_CC],[
             add=" -fno-strict-aliasing"
         fi
         CFLAGS="$CFLAGS_orig$add"
+        CFLAGS="$CFLAGS -fno-strict-aliasing -I/home/shukiz/projects/open-mpi/hucx-vanilla/build/include -Iucx -I\"$ompi_check_ucx_dir\"/include"
 
         PRTE_FLAGS_UNIQ(CFLAGS)
         AC_MSG_WARN([$add has been added to CFLAGS])
         unset add
     fi
+
 
     # Try to enable restrict keyword
     RESTRICT_CFLAGS=

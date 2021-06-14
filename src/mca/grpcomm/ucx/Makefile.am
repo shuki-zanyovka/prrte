@@ -22,6 +22,8 @@ sources = \
 # mca_<type>_<name>.la (for DSO builds) or libmca_<type>_<name>.la
 # (for static builds).
 
+#if PRRTE_HAVE_UCX 
+
 if MCA_BUILD_prte_grpcomm_ucx_DSO
 component_noinst =
 component_install = mca_grpcomm_ucx.la
@@ -30,12 +32,16 @@ component_noinst = libmca_grpcomm_ucx.la
 component_install =
 endif
 
+#endif
+
 mcacomponentdir = $(prtelibdir)
 mcacomponent_LTLIBRARIES = $(component_install)
 mca_grpcomm_ucx_la_SOURCES = $(sources)
-mca_grpcomm_ucx_la_LDFLAGS = -module -avoid-version
+mca_grpcomm_ucx_la_LDFLAGS = -module -avoid-version -lucs -lucp -lucg
 mca_grpcomm_ucx_la_LIBADD = $(top_builddir)/src/libprrte.la
+
 
 noinst_LTLIBRARIES = $(component_noinst)
 libmca_grpcomm_ucx_la_SOURCES =$(sources)
 libmca_grpcomm_ucx_la_LDFLAGS = -module -avoid-version
+

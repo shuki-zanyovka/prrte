@@ -16,6 +16,7 @@
  * $HEADER$
  */
 
+#include "mpi.h"
 #include "../ucx/grpcomm_ucx.h"
 
 #include "prte_config.h"
@@ -42,6 +43,7 @@
 
 #include "ucp/api/ucp.h"
 #include "ucg/api/ucg.h"
+#include "ucg/api/ucg_mpi.h"
 
 /* Static API's */
 static int init(void);
@@ -82,6 +84,10 @@ static prte_list_t tracker;
  */
 static int init(void)
 {
+    int ret;
+
+    prte_output(10, "ucx ==> init()\n");
+
     PRTE_CONSTRUCT(&tracker, prte_list_t);
 
     /* post the receives */
@@ -90,7 +96,7 @@ static int init(void)
                             PRTE_RML_PERSISTENT,
                             xcast_recv, NULL);
     prte_rml.recv_buffer_nb(PRTE_NAME_WILDCARD,
-                            PRTE_RML_TAG_ALLGATHER_DIRECT,
+                            PRTE_RML_TAG_ALLGATHER_UCX,
                             PRTE_RML_PERSISTENT,
                             allgather_recv, NULL);
     /* setup recv for barrier release */
@@ -115,9 +121,10 @@ static int xcast(prte_vpid_t *vpids,
                  size_t nprocs,
                  prte_buffer_t *buf)
 {
-#if 0
-    int rc;
+    int ret;
 
+    prte_output(10, "ucx ==> xcast()\n");
+#if 0
     /* send it to the HNP (could be myself) for relay */
     PRTE_RETAIN(buf);  // we'll let the RML release it
     if (0 > (rc = prte_rml.send_buffer_nb(PRTE_PROC_MY_HNP, buf, PRTE_RML_TAG_XCAST,
@@ -126,6 +133,22 @@ static int xcast(prte_vpid_t *vpids,
         PRTE_RELEASE(buf);
         return rc;
     }
+#else
+    /* Initialize UCG collective bcast */
+
+#if 0
+    ret = mca_coll_ucx_bcast(buf->base_ptr,
+            buf->bytes_used, struct ompi_datatype_t *dtype, 0,
+            MPI_COMM_WORLD, mca_coll_base_module_t *module)
+#endif
+
+    ret = mca_coll_ucx_bcast(buf->base_ptr, buf->bytes_used, MPI_BYTE, 0, MPI_COMM_WORLD /*module->shared_comm*/,
+                             NULL); //module->shared_comm->c_coll->coll_bcast_module);
+    if (PRTE_UNLIKELY(UCS_STATUS_IS_ERR(ret))) {
+        PRTE_OUTPUT_VERBOSE((1, prte_grpcomm_base_framework.framework_output,"ucx bcast failed: %s", ucs_status_string(ret)));
+        return PRTE_ERROR;
+    }
+
 #endif
     return PRTE_SUCCESS;
 }
@@ -138,7 +161,7 @@ static int allgather(prte_grpcomm_coll_t *coll,
     prte_buffer_t *relay;
 
     PRTE_OUTPUT_VERBOSE((1, prte_grpcomm_base_framework.framework_output,
-                         "%s grpcomm:direct: allgather",
+                         "%s grpcomm:ucx: allgather",
                          PRTE_NAME_PRINT(PRTE_PROC_MY_NAME)));
 
     /* the base functions pushed us into the event library
@@ -165,12 +188,12 @@ static int allgather(prte_grpcomm_coll_t *coll,
 
     /* send this to ourselves for processing */
     PRTE_OUTPUT_VERBOSE((1, prte_grpcomm_base_framework.framework_output,
-                         "%s grpcomm:direct:allgather sending to ourself",
+                         "%s grpcomm:ucx:allgather sending to ourself",
                          PRTE_NAME_PRINT(PRTE_PROC_MY_NAME)));
 
     /* send the info to ourselves for tracking */
     rc = prte_rml.send_buffer_nb(PRTE_PROC_MY_NAME, relay,
-                                 PRTE_RML_TAG_ALLGATHER_DIRECT,
+                                 PRTE_RML_TAG_ALLGATHER_UCX,
                                  prte_rml_send_callback, NULL);
     return rc;
 #else
@@ -190,7 +213,7 @@ static void allgather_recv(int status, prte_process_name_t* sender,
     prte_grpcomm_coll_t *coll;
 
     PRTE_OUTPUT_VERBOSE((1, prte_grpcomm_base_framework.framework_output,
-                         "%s grpcomm:direct allgather recvd from %s",
+                         "%s grpcomm:ucx allgather recvd from %s",
                          PRTE_NAME_PRINT(PRTE_PROC_MY_NAME),
                          PRTE_NAME_PRINT(sender)));
 
@@ -220,7 +243,7 @@ static void allgather_recv(int status, prte_process_name_t* sender,
     prte_dss.copy_payload(&coll->bucket, buffer);
 
     PRTE_OUTPUT_VERBOSE((1, prte_grpcomm_base_framework.framework_output,
-                         "%s grpcomm:direct allgather recv nexpected %d nrep %d",
+                         "%s grpcomm:ucx allgather recv nexpected %d nrep %d",
                          PRTE_NAME_PRINT(PRTE_PROC_MY_NAME),
                          (int)coll->nexpected, (int)coll->nreported));
 
@@ -228,7 +251,7 @@ static void allgather_recv(int status, prte_process_name_t* sender,
     if (coll->nreported == coll->nexpected) {
         if (PRTE_PROC_IS_MASTER) {
             PRTE_OUTPUT_VERBOSE((1, prte_grpcomm_base_framework.framework_output,
-                                 "%s grpcomm:direct allgather HNP reports complete",
+                                 "%s grpcomm:ucx allgather HNP reports complete",
                                  PRTE_NAME_PRINT(PRTE_PROC_MY_NAME)));
             /* the allgather is complete - send the xcast */
             reply = PRTE_NEW(prte_buffer_t);
@@ -274,7 +297,7 @@ static void allgather_recv(int status, prte_process_name_t* sender,
             PRTE_RELEASE(reply);
         } else {
             PRTE_OUTPUT_VERBOSE((1, prte_grpcomm_base_framework.framework_output,
-                                 "%s grpcomm:direct allgather rollup complete - sending to %s",
+                                 "%s grpcomm:ucx allgather rollup complete - sending to %s",
                                  PRTE_NAME_PRINT(PRTE_PROC_MY_NAME),
                                  PRTE_NAME_PRINT(PRTE_PROC_MY_PARENT)));
             /* relay the bucket upward */
@@ -297,7 +320,7 @@ static void allgather_recv(int status, prte_process_name_t* sender,
             prte_dss.copy_payload(reply, &coll->bucket);
             /* send the info to our parent */
             rc = prte_rml.send_buffer_nb(PRTE_PROC_MY_PARENT, reply,
-                                         PRTE_RML_TAG_ALLGATHER_DIRECT,
+                                         PRTE_RML_TAG_ALLGATHER_UCX,
                                          prte_rml_send_callback, NULL);
         }
     }
@@ -326,7 +349,7 @@ static void xcast_recv(int status, prte_process_name_t* sender,
     uint8_t *packed_data, *cmpdata;
 
     PRTE_OUTPUT_VERBOSE((1, prte_grpcomm_base_framework.framework_output,
-                         "%s grpcomm:direct:xcast:recv: with %d bytes",
+                         "%s grpcomm:ucx:xcast:recv: with %d bytes",
                          PRTE_NAME_PRINT(PRTE_PROC_MY_NAME),
                          (int)buffer->bytes_used));
 
@@ -430,7 +453,7 @@ static void xcast_recv(int status, prte_process_name_t* sender,
         /* if list is empty, no relay is required */
         if (prte_list_is_empty(&coll)) {
             PRTE_OUTPUT_VERBOSE((5, prte_grpcomm_base_framework.framework_output,
-                                 "%s grpcomm:direct:send_relay - recipient list is empty!",
+                                 "%s grpcomm:ucx:send_relay - recipient list is empty!",
                                  PRTE_NAME_PRINT(PRTE_PROC_MY_NAME)));
             goto CLEANUP;
         }
@@ -440,7 +463,7 @@ static void xcast_recv(int status, prte_process_name_t* sender,
             nm = (prte_namelist_t*)item;
 
             PRTE_OUTPUT_VERBOSE((5, prte_grpcomm_base_framework.framework_output,
-                                 "%s grpcomm:direct:send_relay sending relay msg of %d bytes to %s",
+                                 "%s grpcomm:ucx:send_relay sending relay msg of %d bytes to %s",
                                  PRTE_NAME_PRINT(PRTE_PROC_MY_NAME), (int)rly->bytes_used,
                                  PRTE_NAME_PRINT(&nm->name)));
             PRTE_RETAIN(rly);
@@ -450,7 +473,7 @@ static void xcast_recv(int status, prte_process_name_t* sender,
             jdata = prte_get_job_data_object(nm->name.jobid);
             if (NULL == (rec = (prte_proc_t*)prte_pointer_array_get_item(jdata->procs, nm->name.vpid))) {
                 if (!prte_abnormal_term_ordered && !prte_prteds_term_ordered) {
-                    prte_output(0, "%s grpcomm:direct:send_relay proc %s not found - cannot relay",
+                    prte_output(0, "%s grpcomm:ucx:send_relay proc %s not found - cannot relay",
                                 PRTE_NAME_PRINT(PRTE_PROC_MY_NAME), PRTE_NAME_PRINT(&nm->name));
                 }
                 PRTE_RELEASE(rly);
@@ -462,7 +485,7 @@ static void xcast_recv(int status, prte_process_name_t* sender,
                 PRTE_PROC_STATE_CALLED_ABORT != rec->state) ||
                 !PRTE_FLAG_TEST(rec, PRTE_PROC_FLAG_ALIVE)) {
                 if (!prte_abnormal_term_ordered && !prte_prteds_term_ordered) {
-                    prte_output(0, "%s grpcomm:direct:send_relay proc %s not running - cannot relay: %s ",
+                    prte_output(0, "%s grpcomm:ucx:send_relay proc %s not running - cannot relay: %s ",
                                 PRTE_NAME_PRINT(PRTE_PROC_MY_NAME), PRTE_NAME_PRINT(&nm->name),
                                 PRTE_FLAG_TEST(rec, PRTE_PROC_FLAG_ALIVE) ? prte_proc_state_to_str(rec->state) : "NOT ALIVE");
                 }
@@ -491,7 +514,7 @@ static void xcast_recv(int status, prte_process_name_t* sender,
     /* now pass the relay buffer to myself for processing - don't
      * inject it into the RML system via send as that will compete
      * with the relay messages down in the OOB. Instead, pass it
-     * directly to the RML message processor */
+     * ucxly to the RML message processor */
     if (PRTE_DAEMON_DVM_NIDMAP_CMD != command) {
         PRTE_RML_POST_MESSAGE(PRTE_PROC_MY_NAME, tag, 1,
                               relay->base_ptr, relay->bytes_used);
@@ -516,7 +539,7 @@ static void barrier_release(int status, prte_process_name_t* sender,
     prte_grpcomm_coll_t *coll;
 
     PRTE_OUTPUT_VERBOSE((5, prte_grpcomm_base_framework.framework_output,
-                         "%s grpcomm:direct: barrier release called with %d bytes",
+                         "%s grpcomm:ucx: barrier release called with %d bytes",
                          PRTE_NAME_PRINT(PRTE_PROC_MY_NAME), (int)buffer->bytes_used));
 
     /* unpack the signature */

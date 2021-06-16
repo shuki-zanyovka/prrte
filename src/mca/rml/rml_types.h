@@ -195,6 +195,8 @@ BEGIN_C_DECLS
 #define PRTE_RML_TAG_MAX                   100
 
 
+#define PRTE_RML_TAG_ALLGATHER_UCX         101
+
 #define PRTE_RML_TAG_NTOH(t) ntohl(t)
 #define PRTE_RML_TAG_HTON(t) htonl(t)
 

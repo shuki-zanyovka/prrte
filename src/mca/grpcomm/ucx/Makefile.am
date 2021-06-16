@@ -37,7 +37,7 @@ endif
 mcacomponentdir = $(prtelibdir)
 mcacomponent_LTLIBRARIES = $(component_install)
 mca_grpcomm_ucx_la_SOURCES = $(sources)
-mca_grpcomm_ucx_la_LDFLAGS = -module -avoid-version -lucs -lucp -lucg
+mca_grpcomm_ucx_la_LDFLAGS = -module -avoid-version -lucs -lucp -lucg -L/home/shukiz/projects/open-mpi/hucx-vanilla/build/lib
 mca_grpcomm_ucx_la_LIBADD = $(top_builddir)/src/libprrte.la
 
 

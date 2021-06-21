@@ -57,6 +57,7 @@ typedef uint8_t prte_app_context_flags_t;
                                           //        with the application procs in the other apps
 #define PRTE_APP_PSET_NAME          23    // string - user-assigned name for the process
                                           //          set containing the given process
+#define PRTE_APP_ROOT_NODE          24    // string - user-assigned root node address (used for broadcast setup)
 
 #define PRTE_APP_MAX_KEY        100
 

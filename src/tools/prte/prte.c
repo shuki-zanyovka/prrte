@@ -173,7 +173,9 @@ static prte_cmd_line_init_t cmd_line_init[] = {
     { '\0', "report-uri", 1, PRTE_CMD_LINE_TYPE_STRING,
       "Printout URI on stdout [-], stderr [+], or a file [anything else]",
       PRTE_CMD_LINE_OTYPE_DVM },
-
+    { '\0', "root-node", 1, PRTE_CMD_LINE_TYPE_STRING,
+      "root node IP address",
+      PRTE_CMD_LINE_OTYPE_DVM },
 
     /* Debug options */
     { '\0', "debug", 0, PRTE_CMD_LINE_TYPE_BOOL,
@@ -836,6 +838,19 @@ int main(int argc, char *argv[])
             pval = prte_cmd_line_get_param(prte_cmd_line, "machinefile", 0, 0);
             prte_set_attribute(&dapp->attributes, PRTE_APP_HOSTFILE, PRTE_ATTR_LOCAL, pval->data.string, PRTE_STRING);
         }
+    }
+
+
+    /* Did the user specify a root node? */
+    if (0 < (j = prte_cmd_line_get_ninsts(prte_cmd_line, "root-node"))) {
+        char **targ=NULL, *tval;
+        pval = prte_cmd_line_get_param(prte_cmd_line, "root-node", 0, 0);
+        //prte_argv_append_nosize(&targ, pval->data.string);
+
+        printf("User specified root address=%s\n", pval->data.string);
+        prte_set_attribute(&dapp->attributes, PRTE_APP_ROOT_NODE, PRTE_ATTR_GLOBAL, pval->data.string, PRTE_STRING);
+        //prte_argv_free(targ);
+        //free(tval);
     }
 
     /* Did the user specify any hosts? */

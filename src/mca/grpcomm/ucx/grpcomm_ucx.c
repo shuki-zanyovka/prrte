@@ -44,6 +44,23 @@
 #include "ucp/api/ucp.h"
 #include "ucg/api/ucg.h"
 #include "ucg/api/ucg_mpi.h"
+#include "mpi.h"
+
+OMPI_DECLSPEC extern struct ompi_predefined_datatype_t ompi_mpi_byte;
+
+/*
+ucp_context_h g_ucp_context;
+ucp_worker_h  g_ucp_worker;
+ucp_address_t *g_address;
+size_t        g_address_length;
+*/
+
+/* internal variables */
+static prte_list_t tracker;
+
+/* Global root node address (used for broadcast over UCX) */
+static char *root_node_address;
+static int grpcomm_ucx_lateinit_done = 0;
 
 /* Static API's */
 static int init(void);
@@ -76,18 +93,58 @@ static void barrier_release(int status, prte_process_name_t* sender,
                             prte_buffer_t* buffer, prte_rml_tag_t tag,
                             void* cbdata);
 
-/* internal variables */
-static prte_list_t tracker;
+
+static int grpcomm_ucx_lateinit(void)
+{
+    int ret;
+    prte_job_t *jdata;
+    prte_app_context_t *dapp;
+
+    if (!grpcomm_ucx_lateinit_done) {
+        prte_output(0, "ucx ==> init() PRTE_NAME_PRINT(PRTE_PROC_MY_NAME)=%s\n", PRTE_NAME_PRINT(PRTE_PROC_MY_NAME));
+
+        /* get the daemon job object - was created by ess/hnp component */
+       if (NULL == (jdata = prte_get_job_data_object(PRTE_PROC_MY_NAME->jobid))) {
+           prte_output(0, "ucx ==> init() Error! prte_get_job_data_object() failed!\n");
+           return PRTE_ERROR;
+       }
+
+       /* ess/hnp also should have created a daemon "app" */
+       if (NULL == (dapp = (prte_app_context_t*)prte_pointer_array_get_item(jdata->apps, 0))) {
+           prte_output(0, "ucx ==> init() Error! prte_pointer_array_get_item() failed!\n");
+           return PRTE_ERROR;
+       }
+
+        /* now filter the list through any -host specification */
+        if (prte_get_attribute(&dapp->attributes, PRTE_APP_ROOT_NODE, (void**)&root_node_address, PRTE_STRING)) {
+            prte_output(0, "ucx ==> init() PRTE root node: %s\n", root_node_address);
+        }
+
+        printf("root_node_address = %s\n", root_node_address);
+
+        grpcomm_ucx_lateinit_done = 1;
+    }
+
+    return PRTE_SUCCESS;
+}
 
 /**
  * Initialize the module
  */
 static int init(void)
 {
-    int ret;
 
-    prte_output(10, "ucx ==> init()\n");
 
+#if 0
+    prte_list_item_t *item, *next;
+    prte_list_foreach_safe(foo, next, list, prte_list_item_t) {
+       interface = foo
+       prte_output(10, "ucx ==> init() item\n", item->);
+    }
+
+#endif
+
+#if 0
     PRTE_CONSTRUCT(&tracker, prte_list_t);
 
     /* post the receives */
@@ -104,6 +161,8 @@ static int init(void)
                             PRTE_RML_TAG_COLL_RELEASE,
                             PRTE_RML_PERSISTENT,
                             barrier_release, NULL);
+#endif
+
 
     return PRTE_SUCCESS;
 }
@@ -117,18 +176,28 @@ static void finalize(void)
     return;
 }
 
-static int xcast(prte_vpid_t *vpids,
-                 size_t nprocs,
-                 prte_buffer_t *buf)
+
+static int xcast(prte_vpid_t *vpids, size_t nprocs, prte_buffer_t *buf)
 {
     int ret;
 
     prte_output(10, "ucx ==> xcast()\n");
+
+    ret = grpcomm_ucx_lateinit();
+    if (ret != PRTE_SUCCESS) {
+        prte_output(10, "ucx ==> xcast() gpcomm_ucx_lateinit() failed, ret=%d\n", ret);
+        return ret;
+    }
+
 #if 0
     /* send it to the HNP (could be myself) for relay */
     PRTE_RETAIN(buf);  // we'll let the RML release it
     if (0 > (rc = prte_rml.send_buffer_nb(PRTE_PROC_MY_HNP, buf, PRTE_RML_TAG_XCAST,
-                                          prte_rml_send_callback, NULL))) {
+                                          prte_rml_send_callback, NULexport UCX_INSTALL_PATH=/home/shukiz/projects/open-mpi/hucx-vanilla/build
+                                          export OMPI_INSTALL_PATH=/home/shukiz/projects/open-mpi/ompi-vanilla/build
+                                          export LD_LIBRARY_PATH=$OMPI_INSTALL_PATH/lib:$OMPI_INSTALL_PATH/lib/prte:/usr/local/lib:$UCX_INSTALL_PATH/lib:"$LD_LIBRARY_PATH"
+
+L))) {
         PRTE_ERROR_LOG(rc);
         PRTE_RELEASE(buf);
         return rc;
@@ -142,12 +211,20 @@ static int xcast(prte_vpid_t *vpids,
             MPI_COMM_WORLD, mca_coll_base_module_t *module)
 #endif
 
-    ret = mca_coll_ucx_bcast(buf->base_ptr, buf->bytes_used, MPI_BYTE, 0, MPI_COMM_WORLD /*module->shared_comm*/,
+#if 0
+        /*
+        op ==> NULL for bcast
+        static UCS_F_ALWAYS_INLINE ucs_status_t ucg_coll_##_lname##_init(__VA_ARGS__,  \
+                ucg_group_h group, ucg_collective_callback_t cb, void *op,             \
+                ucg_group_member_index_t root, unsigned modifiers, ucg_coll_h *coll_p) \
+                */
+    ret = mca_coll_ucx_bcast(buf->base_ptr, buf->bytes_used, MPI_BYTE, 0, /*module->shared_comm*/
                              NULL); //module->shared_comm->c_coll->coll_bcast_module);
     if (PRTE_UNLIKELY(UCS_STATUS_IS_ERR(ret))) {
         PRTE_OUTPUT_VERBOSE((1, prte_grpcomm_base_framework.framework_output,"ucx bcast failed: %s", ucs_status_string(ret)));
         return PRTE_ERROR;
     }
+#endif
 
 #endif
     return PRTE_SUCCESS;

@@ -44,7 +44,25 @@
 #include "ucp/api/ucp.h"
 #include "ucg/api/ucg.h"
 #include "ucg/api/ucg_mpi.h"
+#include "ucg/api/ucg_minimal.h"
+
 #include "mpi.h"
+
+
+#define CHKERR_ACTION(_cond, _msg, _action) \
+    do { \
+        if (_cond) { \
+            fprintf(stderr, "Failed to %s\n", _msg); \
+            _action; \
+        } \
+    } while (0)
+
+#define CHKERR_JUMP(_cond, _msg, _label) \
+    CHKERR_ACTION(_cond, _msg, goto _label)
+
+#define ARRAY_SIZE(aRRAY) (sizeof(aRRAY) / sizeof(aRRAY[0]))
+
+#define HAVE_UCG
 
 OMPI_DECLSPEC extern struct ompi_predefined_datatype_t ompi_mpi_byte;
 
@@ -61,6 +79,11 @@ static prte_list_t tracker;
 /* Global root node address (used for broadcast over UCX) */
 static char *root_node_address;
 static int grpcomm_ucx_lateinit_done = 0;
+
+static ucp_params_t ucp_params;
+
+/* UCG-minimal context */
+ucg_minimal_ctx_t g_ucg_context;
 
 /* Static API's */
 static int init(void);
@@ -93,12 +116,79 @@ static void barrier_release(int status, prte_process_name_t* sender,
                             prte_buffer_t* buffer, prte_rml_tag_t tag,
                             void* cbdata);
 
+#include <ucg/api/ucg_minimal.h>
+
+/* Number of tests / iterations */
+#define NUM_TESTS 10000
+
+static uint16_t server_port     = 13337;
+static long test_string_length  = 64;
+static unsigned num_connections = 1;
+
+#if 0
+int grpcomm_minimal_broadcast_init(void)
+{
+    // TODO: make this function work...
+    int ret         = -1;
+    char *root_name = NULL;
+    ucs_status_t status;
+    void *test_string;
+    uint32_t i;
+
+    /* Parse the command line */
+    status = parse_cmd(argc, argv, &root_name);
+    CHKERR_JUMP(status != UCS_OK, "parse_cmd\n", err);
+
+    ucg_minimal_ctx_t ctx;
+    struct sockaddr_in sock_addr   = {
+            .sin_family            = AF_INET,
+            .sin_port              = htons(server_port),
+            .sin_addr              = {
+                    .s_addr        = root_name ? inet_addr(root_name) : INADDR_ANY
+            }
+    };
+    ucs_sock_addr_t server_address = {
+            .addr                  = (struct sockaddr *)&sock_addr,
+            .addrlen               = sizeof(struct sockaddr)
+    };
+
+    CHKERR_JUMP(sock_addr.sin_addr.s_addr == (uint32_t)-1, "lookup IP\n", err);
+
+    test_string = mem_type_malloc(test_string_length);
+    CHKERR_JUMP(test_string == NULL, "allocate memory\n", err);
+
+    status = ucg_minimal_init(&ctx, &server_address, num_connections, root_name ? 0 : UCG_MINIMAL_FLAG_SERVER);
+    CHKERR_JUMP(status != UCS_OK, "ucg_minimal_init\n", err_cleanup);
+
+    status = ucg_minimal_broadcast(&ctx, test_string, test_string_length);
+    CHKERR_JUMP(status != UCS_OK, "ucg_minimal_broadcast\n", err_finalize);
+
+
+    ret = 0;
+
+err_finalize:
+    ucg_minimal_finalize(&ctx);
+
+err_cleanup:
+    mem_type_free(test_string);
+
+err:
+    return ret;
+}
+#endif
+
+static void grpcomm_ucg_finalize(void)
+{
+}
 
 static int grpcomm_ucx_lateinit(void)
 {
-    int ret;
+    int ret                        = PRTE_ERROR;
+    char *root_name                = NULL;
+    ucs_sock_addr_t server_address = { 0 };
     prte_job_t *jdata;
     prte_app_context_t *dapp;
+    ucs_status_t status;
 
     if (!grpcomm_ucx_lateinit_done) {
         prte_output(0, "ucx ==> init() PRTE_NAME_PRINT(PRTE_PROC_MY_NAME)=%s\n", PRTE_NAME_PRINT(PRTE_PROC_MY_NAME));
@@ -122,10 +212,56 @@ static int grpcomm_ucx_lateinit(void)
 
         printf("root_node_address = %s\n", root_node_address);
 
+        /* TODO: Update the IP address of the root */
+        //root_name = "127.0.0.1";
+
+        //test_string = mem_type_malloc(test_string_length);
+        //CHKERR_JUMP(test_string == NULL, "allocate memory\n", err);
+
+        /* Is client mode? */
+        ucg_minimal_ctx_t ctx;
+        struct sockaddr_in sock_addr   = {
+                .sin_family            = AF_INET,
+                .sin_port              = htons(server_port),
+                .sin_addr              = {
+                        .s_addr        = root_name ? inet_addr(root_name) : INADDR_ANY
+                }
+        };
+        ucs_sock_addr_t server_address = {
+                .addr                  = (struct sockaddr *)&sock_addr,
+                .addrlen               = sizeof(struct sockaddr)
+        };
+
+        //CHKERR_JUMP(sock_addr.sin_addr.s_addr == (uint32_t)-1, "lookup IP\n", err);
+
+        server_address.addr = (struct sockaddr *)&sock_addr;
+        server_address.addrlen = sizeof(struct sockaddr);
+
+        printf("Calling ucg_minimal_init()...\n");
+
+        status = ucg_minimal_init(&g_ucg_context, &server_address, num_connections,
+                                  root_node_address ? UCG_MINIMAL_FLAG_SERVER : 0);
+        CHKERR_JUMP(status != UCS_OK, "ucg_minimal_init\n", err_cleanup);
+
+        printf("ucg_minimal_init() - done\n");
+
+        //status = ucg_minimal_broadcast(&ctx, test_string, sizeof(test_string_length));
+        //CHKERR_JUMP(status != UCS_OK, "ucg_minimal_broadcast\n", err_finalize);
+
+        ret = PRTE_SUCCESS;
+
         grpcomm_ucx_lateinit_done = 1;
+
+        goto grpcomm_ucx_lateinit_done_no_error;
     }
 
-    return PRTE_SUCCESS;
+err_cleanup:
+    ucg_minimal_finalize(&g_ucg_context);
+    //mem_type_free(test_string);
+    grpcomm_ucg_finalize();
+
+grpcomm_ucx_lateinit_done_no_error:
+    return ret;
 }
 
 /**
@@ -173,6 +309,13 @@ static int init(void)
 static void finalize(void)
 {
     PRTE_LIST_DESTRUCT(&tracker);
+
+    ucg_minimal_finalize(&g_ucg_context);
+
+    //mem_type_free(test_string);
+
+    grpcomm_ucg_finalize();
+
     return;
 }
 
@@ -180,6 +323,7 @@ static void finalize(void)
 static int xcast(prte_vpid_t *vpids, size_t nprocs, prte_buffer_t *buf)
 {
     int ret;
+    ucs_status_t status;
 
     prte_output(10, "ucx ==> xcast()\n");
 
@@ -189,15 +333,20 @@ static int xcast(prte_vpid_t *vpids, size_t nprocs, prte_buffer_t *buf)
         return ret;
     }
 
+
+    status = ucg_minimal_broadcast(&g_ucg_context, buf->base_ptr, buf->bytes_used);
+    if (status != UCS_OK) {
+        prte_output(10, "ucx ==> xcast() ucg_minimal_broadcast() failed, status=%d\n", status);
+    }
+
 #if 0
     /* send it to the HNP (could be myself) for relay */
     PRTE_RETAIN(buf);  // we'll let the RML release it
+   // UCX_INSTALL_PATH=/home/shukiz/projects/open-mpi/hucx-vanilla/build
+  //  export OMPI_INSTALL_PATH=/home/shukiz/projects/open-mpi/ompi-vanilla/build
+  //  export LD_LIBRARY_PATH=$OMPI_INSTALL_PATH/lib:$OMPI_INSTALL_PATH/lib/prte:/usr/local/lib:$UCX_INSTALL_PATH/lib:"$LD_LIBRARY_PATH"
     if (0 > (rc = prte_rml.send_buffer_nb(PRTE_PROC_MY_HNP, buf, PRTE_RML_TAG_XCAST,
-                                          prte_rml_send_callback, NULexport UCX_INSTALL_PATH=/home/shukiz/projects/open-mpi/hucx-vanilla/build
-                                          export OMPI_INSTALL_PATH=/home/shukiz/projects/open-mpi/ompi-vanilla/build
-                                          export LD_LIBRARY_PATH=$OMPI_INSTALL_PATH/lib:$OMPI_INSTALL_PATH/lib/prte:/usr/local/lib:$UCX_INSTALL_PATH/lib:"$LD_LIBRARY_PATH"
-
-L))) {
+                                          prte_rml_send_callback, NULexportL))) {
         PRTE_ERROR_LOG(rc);
         PRTE_RELEASE(buf);
         return rc;
@@ -409,6 +558,22 @@ static void xcast_recv(int status, prte_process_name_t* sender,
                        prte_buffer_t* buffer, prte_rml_tag_t tg,
                        void* cbdata)
 {
+    ucs_status_t st;
+    int ret;
+
+    prte_output(10, "ucx ==> xcast()\n");
+
+    ret = grpcomm_ucx_lateinit();
+    if (ret != PRTE_SUCCESS) {
+        prte_output(10, "ucx ==> xcast() gpcomm_ucx_lateinit() failed, ret=%d\n", ret);
+        return;
+    }
+
+    st = ucg_minimal_broadcast(&g_ucg_context, buffer->base_ptr, buffer->bytes_allocated);
+    if (status != UCS_OK) {
+        prte_output(10, "xcast_recv(): ucg_minimal_broadcast() failed, status=%d\n", status);
+    }
+
 #if 0
     prte_list_item_t *item;
     prte_namelist_t *nm;

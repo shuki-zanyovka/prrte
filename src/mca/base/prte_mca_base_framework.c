@@ -165,6 +165,9 @@ int prte_mca_base_framework_open (struct prte_mca_base_framework_t *framework,
 
     assert (NULL != framework);
 
+    prte_output_verbose(PRTE_MCA_BASE_VERBOSE_COMPONENT, 20, "prte_mca_base_framework_open() %s %s\n", framework->framework_project,
+            framework->framework_name);
+
     /* register this framework before opening it */
     ret = prte_mca_base_framework_register (framework, PRTE_MCA_BASE_REGISTER_DEFAULT);
     if (PRTE_SUCCESS != ret) {

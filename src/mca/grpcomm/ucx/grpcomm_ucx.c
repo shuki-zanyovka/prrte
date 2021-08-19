@@ -15,10 +15,6 @@
  *
  * $HEADER$
  */
-
-#include "mpi.h"
-#include "../ucx/grpcomm_ucx.h"
-
 #include "prte_config.h"
 #include "constants.h"
 #include "types.h"
@@ -41,13 +37,14 @@
 
 #include "src/mca/grpcomm/base/base.h"
 
+#include "grpcomm_ucx.h"
+
 #include "ucp/api/ucp.h"
 #include "ucg/api/ucg.h"
 #include "ucg/api/ucg_mpi.h"
 #include "ucg/api/ucg_minimal.h"
 
 #include "mpi.h"
-
 
 #define CHKERR_ACTION(_cond, _msg, _action) \
     do { \
@@ -116,7 +113,10 @@ static void barrier_release(int status, prte_process_name_t* sender,
                             prte_buffer_t* buffer, prte_rml_tag_t tag,
                             void* cbdata);
 
-#include <ucg/api/ucg_minimal.h>
+/* internal variables */
+static prte_list_t tracker;
+
+
 
 /* Number of tests / iterations */
 #define NUM_TESTS 10000
@@ -124,58 +124,6 @@ static void barrier_release(int status, prte_process_name_t* sender,
 static uint16_t server_port     = 13337;
 static long test_string_length  = 64;
 static unsigned num_connections = 1;
-
-#if 0
-int grpcomm_minimal_broadcast_init(void)
-{
-    // TODO: make this function work...
-    int ret         = -1;
-    char *root_name = NULL;
-    ucs_status_t status;
-    void *test_string;
-    uint32_t i;
-
-    /* Parse the command line */
-    status = parse_cmd(argc, argv, &root_name);
-    CHKERR_JUMP(status != UCS_OK, "parse_cmd\n", err);
-
-    ucg_minimal_ctx_t ctx;
-    struct sockaddr_in sock_addr   = {
-            .sin_family            = AF_INET,
-            .sin_port              = htons(server_port),
-            .sin_addr              = {
-                    .s_addr        = root_name ? inet_addr(root_name) : INADDR_ANY
-            }
-    };
-    ucs_sock_addr_t server_address = {
-            .addr                  = (struct sockaddr *)&sock_addr,
-            .addrlen               = sizeof(struct sockaddr)
-    };
-
-    CHKERR_JUMP(sock_addr.sin_addr.s_addr == (uint32_t)-1, "lookup IP\n", err);
-
-    test_string = mem_type_malloc(test_string_length);
-    CHKERR_JUMP(test_string == NULL, "allocate memory\n", err);
-
-    status = ucg_minimal_init(&ctx, &server_address, num_connections, root_name ? 0 : UCG_MINIMAL_FLAG_SERVER);
-    CHKERR_JUMP(status != UCS_OK, "ucg_minimal_init\n", err_cleanup);
-
-    status = ucg_minimal_broadcast(&ctx, test_string, test_string_length);
-    CHKERR_JUMP(status != UCS_OK, "ucg_minimal_broadcast\n", err_finalize);
-
-
-    ret = 0;
-
-err_finalize:
-    ucg_minimal_finalize(&ctx);
-
-err_cleanup:
-    mem_type_free(test_string);
-
-err:
-    return ret;
-}
-#endif
 
 static void grpcomm_ucg_finalize(void)
 {
@@ -269,18 +217,12 @@ grpcomm_ucx_lateinit_done_no_error:
  */
 static int init(void)
 {
-
-
-#if 0
-    prte_list_item_t *item, *next;
+   /* prte_list_item_t *item, *next;
     prte_list_foreach_safe(foo, next, list, prte_list_item_t) {
        interface = foo
        prte_output(10, "ucx ==> init() item\n", item->);
     }
-
-#endif
-
-#if 0
+*/
     PRTE_CONSTRUCT(&tracker, prte_list_t);
 
     /* post the receives */
@@ -297,8 +239,6 @@ static int init(void)
                             PRTE_RML_TAG_COLL_RELEASE,
                             PRTE_RML_PERSISTENT,
                             barrier_release, NULL);
-#endif
-
 
     return PRTE_SUCCESS;
 }
@@ -322,11 +262,14 @@ static void finalize(void)
 
 static int xcast(prte_vpid_t *vpids, size_t nprocs, prte_buffer_t *buf)
 {
+    int rc;
+
     int ret;
     ucs_status_t status;
 
     prte_output(10, "ucx ==> xcast()\n");
 
+#if 0
     ret = grpcomm_ucx_lateinit();
     if (ret != PRTE_SUCCESS) {
         prte_output(10, "ucx ==> xcast() gpcomm_ucx_lateinit() failed, ret=%d\n", ret);
@@ -338,51 +281,22 @@ static int xcast(prte_vpid_t *vpids, size_t nprocs, prte_buffer_t *buf)
     if (status != UCS_OK) {
         prte_output(10, "ucx ==> xcast() ucg_minimal_broadcast() failed, status=%d\n", status);
     }
+#endif
 
-#if 0
     /* send it to the HNP (could be myself) for relay */
     PRTE_RETAIN(buf);  // we'll let the RML release it
-   // UCX_INSTALL_PATH=/home/shukiz/projects/open-mpi/hucx-vanilla/build
-  //  export OMPI_INSTALL_PATH=/home/shukiz/projects/open-mpi/ompi-vanilla/build
-  //  export LD_LIBRARY_PATH=$OMPI_INSTALL_PATH/lib:$OMPI_INSTALL_PATH/lib/prte:/usr/local/lib:$UCX_INSTALL_PATH/lib:"$LD_LIBRARY_PATH"
     if (0 > (rc = prte_rml.send_buffer_nb(PRTE_PROC_MY_HNP, buf, PRTE_RML_TAG_XCAST,
-                                          prte_rml_send_callback, NULexportL))) {
+                                          prte_rml_send_callback, NULL))) {
         PRTE_ERROR_LOG(rc);
         PRTE_RELEASE(buf);
         return rc;
     }
-#else
-    /* Initialize UCG collective bcast */
-
-#if 0
-    ret = mca_coll_ucx_bcast(buf->base_ptr,
-            buf->bytes_used, struct ompi_datatype_t *dtype, 0,
-            MPI_COMM_WORLD, mca_coll_base_module_t *module)
-#endif
-
-#if 0
-        /*
-        op ==> NULL for bcast
-        static UCS_F_ALWAYS_INLINE ucs_status_t ucg_coll_##_lname##_init(__VA_ARGS__,  \
-                ucg_group_h group, ucg_collective_callback_t cb, void *op,             \
-                ucg_group_member_index_t root, unsigned modifiers, ucg_coll_h *coll_p) \
-                */
-    ret = mca_coll_ucx_bcast(buf->base_ptr, buf->bytes_used, MPI_BYTE, 0, /*module->shared_comm*/
-                             NULL); //module->shared_comm->c_coll->coll_bcast_module);
-    if (PRTE_UNLIKELY(UCS_STATUS_IS_ERR(ret))) {
-        PRTE_OUTPUT_VERBOSE((1, prte_grpcomm_base_framework.framework_output,"ucx bcast failed: %s", ucs_status_string(ret)));
-        return PRTE_ERROR;
-    }
-#endif
-
-#endif
     return PRTE_SUCCESS;
 }
 
 static int allgather(prte_grpcomm_coll_t *coll,
                      prte_buffer_t *buf, int mode)
 {
-#if 0
     int rc;
     prte_buffer_t *relay;
 
@@ -422,16 +336,12 @@ static int allgather(prte_grpcomm_coll_t *coll,
                                  PRTE_RML_TAG_ALLGATHER_UCX,
                                  prte_rml_send_callback, NULL);
     return rc;
-#else
-    return PRTE_SUCCESS;
-#endif
 }
 
 static void allgather_recv(int status, prte_process_name_t* sender,
                            prte_buffer_t* buffer, prte_rml_tag_t tag,
                            void* cbdata)
 {
-#if 0
     int32_t cnt;
     int rc, ret, mode;
     prte_grpcomm_signature_t *sig;
@@ -551,17 +461,18 @@ static void allgather_recv(int status, prte_process_name_t* sender,
         }
     }
     PRTE_RELEASE(sig);
-#endif
 }
 
 static void xcast_recv(int status, prte_process_name_t* sender,
                        prte_buffer_t* buffer, prte_rml_tag_t tg,
                        void* cbdata)
 {
+#if 0
+
     ucs_status_t st;
     int ret;
 
-    prte_output(10, "ucx ==> xcast()\n");
+    prte_output(0, "ucx ==> xcast()\n");
 
     ret = grpcomm_ucx_lateinit();
     if (ret != PRTE_SUCCESS) {
@@ -569,12 +480,16 @@ static void xcast_recv(int status, prte_process_name_t* sender,
         return;
     }
 
+    prte_output(0, "ucx ==> xcast(2)\n");
+
     st = ucg_minimal_broadcast(&g_ucg_context, buffer->base_ptr, buffer->bytes_allocated);
     if (status != UCS_OK) {
         prte_output(10, "xcast_recv(): ucg_minimal_broadcast() failed, status=%d\n", status);
     }
+#endif
 
-#if 0
+    prte_output(0, "ucx ==> xcast(3)\n");
+
     prte_list_item_t *item;
     prte_namelist_t *nm;
     int ret, cnt;
@@ -767,14 +682,12 @@ static void xcast_recv(int status, prte_process_name_t* sender,
         PRTE_RELEASE(relay);
     }
     PRTE_DESTRUCT(&datbuf);
-#endif
 }
 
 static void barrier_release(int status, prte_process_name_t* sender,
                             prte_buffer_t* buffer, prte_rml_tag_t tag,
                             void* cbdata)
 {
-#if 0
     int32_t cnt;
     int rc, ret, mode;
     prte_grpcomm_signature_t *sig;
@@ -820,5 +733,4 @@ static void barrier_release(int status, prte_process_name_t* sender,
     prte_list_remove_item(&prte_grpcomm_base.ongoing, &coll->super);
     PRTE_RELEASE(coll);
     PRTE_RELEASE(sig);
-#endif
 }

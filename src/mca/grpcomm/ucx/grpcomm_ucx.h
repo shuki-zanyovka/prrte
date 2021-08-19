@@ -11,8 +11,8 @@
  * $HEADER$
  *
  */
-#ifndef grpcomm_ucx_H
-#define grpcomm_ucx_H
+#ifndef _GRPCOMM_UCX_H_
+#define _GRPCOMM_UCX_H_
 
 #include "prte_config.h"
 

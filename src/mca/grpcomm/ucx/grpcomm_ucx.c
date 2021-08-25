@@ -15,6 +15,13 @@
  *
  * $HEADER$
  */
+
+#include<stdio.h>
+#include<string.h>
+#include<pthread.h>
+#include<stdlib.h>
+#include<unistd.h>
+
 #include "prte_config.h"
 #include "constants.h"
 #include "types.h"
@@ -46,6 +53,15 @@
 
 #include "mpi.h"
 
+/* Receive buffer size for xcast */
+#define GRPCOMM_UCX_XCAST_RECV_BUFFER_SIZE (1024)
+
+/* UCX Bcast Handshake string */
+#define BCAST_HANDSHAKE_STRING "UCG_BCAST_HANDSHAKE"
+
+/* Maximum size of Node IP address string */
+#define NODE_IP_ADDRESS_STR_SIZE 64
+
 #define CHKERR_ACTION(_cond, _msg, _action) \
     do { \
         if (_cond) { \
@@ -74,7 +90,6 @@ size_t        g_address_length;
 static prte_list_t tracker;
 
 /* Global root node address (used for broadcast over UCX) */
-static char *root_node_address;
 static int grpcomm_ucx_lateinit_done = 0;
 
 static ucp_params_t ucp_params;
@@ -113,34 +128,151 @@ static void barrier_release(int status, prte_process_name_t* sender,
                             prte_buffer_t* buffer, prte_rml_tag_t tag,
                             void* cbdata);
 
+static int grpcomm_ucx_lateinit(int *is_root_node, char *root_node_address);
+
 /* internal variables */
 static prte_list_t tracker;
 
-
-
-/* Number of tests / iterations */
-#define NUM_TESTS 10000
-
-static uint16_t server_port     = 13337;
+static uint16_t server_port     = 13437;
 static long test_string_length  = 64;
 static unsigned num_connections = 1;
+
+/* Broadcast thread id */
+static pthread_t grpcomm_ucx_bcast_tid;
+
+/* Finalize thread */
+volatile int service_finalize = 0;
+
+/* Receive buffer for xcast */
+static uint64_t grpcomm_xcast_recv_buffer[GRPCOMM_UCX_XCAST_RECV_BUFFER_SIZE/sizeof(uint64_t)];
+
+static void grpcomm_ucx_root_node_find(char *root_node_ip, size_t *number_of_nodes)
+{
+    /* "name" itself might be an alias, so find the node object for this name */
+    char **n2names = NULL;
+    char *n2alias = NULL;
+    char **n1names = NULL;
+    char *n1alias = NULL;
+    int i, m;
+    prte_node_t *nptr;
+    size_t num_nodes = 0;
+    int root_node_initialized = 0;
+
+    for (i = 0; i < prte_node_pool->size; i++) {
+        if (NULL == (nptr = (prte_node_t*)prte_pointer_array_get_item(prte_node_pool, i))) {
+            continue;
+        }
+
+        printf("index=%d : ", i);
+
+        if (prte_get_attribute(&nptr->attributes, PRTE_NODE_ALIAS, (void**)&n2alias, PRTE_STRING)) {
+            printf(" %s", n2alias);
+            //n2names = prte_argv_split(n2alias, ',');
+        }
+
+        char *ch;
+        ch = strtok(n2alias, ",");
+        m = 0;
+        while (ch != NULL) {
+            printf(" [m=%d]:%s", m, ch);
+
+            /* Initialize the IP address of the root node */
+            if ((!root_node_initialized) && (m == 3)) {
+                sprintf(root_node_ip, "%s", ch);
+                root_node_initialized = 1;
+            }
+
+            ch = strtok(NULL, " ,");
+            m++;
+        }
+
+        printf("\n");
+
+        free(n2alias);
+
+        if (n2names != NULL) {
+            prte_argv_free(n2names);
+        }
+
+        n2names = NULL;
+
+        num_nodes++;
+    }
+
+    *number_of_nodes = num_nodes;
+
+}
+
+static void *grpcomm_ucx_bcast_thread(void *arg)
+{
+    int is_root_node;
+    int ret;
+    pthread_t id = pthread_self();
+    char root_node_ip[NODE_IP_ADDRESS_STR_SIZE];
+    size_t number_of_nodes;
+    ucs_status_t status;
+
+    //prte_proc_info();
+
+    prte_output(10, "ucx ==> xcast()\n");
+
+    /* Scan nodes and find root */
+    grpcomm_ucx_root_node_find(root_node_ip, &number_of_nodes);
+
+    /* Initialize the UCG-broadcast */
+    ret = grpcomm_ucx_lateinit(&is_root_node, root_node_ip);
+    if (ret != PRTE_SUCCESS) {
+        prte_output(10, "ucx ==> xcast() gpcomm_ucx_lateinit() failed, ret=%d\n", ret);
+        return ret;
+    }
+
+    if (is_root_node) {
+        snprintf(grpcomm_xcast_recv_buffer, sizeof(grpcomm_xcast_recv_buffer), "%s", BCAST_HANDSHAKE_STRING);
+    }
+
+    /* Only relevant for more than 1 node */
+    printf("number_of_nodes = %d, is_root_node=%d\n", number_of_nodes, is_root_node);
+    if (number_of_nodes == 1) {
+        return NULL;
+    }
+
+    while (!service_finalize) {
+        status = ucg_minimal_broadcast(&g_ucg_context, grpcomm_xcast_recv_buffer,
+                     sizeof(grpcomm_xcast_recv_buffer));
+        if (status != UCS_OK) {
+            prte_output(10, "ucx ==> xcast() ucg_minimal_broadcast() failed, status=%d\n", status);
+        }
+
+        prte_output(10, "UCX Bcast received status=%d\n", status);
+
+        /* Root just sends the initial handshake */
+        if (is_root_node) {
+            return NULL;
+        }
+    }
+
+    return NULL;
+}
 
 static void grpcomm_ucg_finalize(void)
 {
 }
 
-static int grpcomm_ucx_lateinit(void)
+static int grpcomm_ucx_lateinit(int *is_root_node, char *root_node_address)
 {
-    int ret                        = PRTE_ERROR;
-    char *root_name                = NULL;
+    int ret = PRTE_ERROR;
     ucs_sock_addr_t server_address = { 0 };
     prte_job_t *jdata;
     prte_app_context_t *dapp;
     ucs_status_t status;
 
-    if (!grpcomm_ucx_lateinit_done) {
-        prte_output(0, "ucx ==> init() PRTE_NAME_PRINT(PRTE_PROC_MY_NAME)=%s\n", PRTE_NAME_PRINT(PRTE_PROC_MY_NAME));
+    *is_root_node = 0;
 
+    if (!grpcomm_ucx_lateinit_done) {
+        prte_output(0, "ucx ==> init() PRTE_NAME_PRINT(PRTE_PROC_MY_NAME)=%s\n",
+            PRTE_NAME_PRINT(PRTE_PROC_MY_NAME));
+
+#if 0
         /* get the daemon job object - was created by ess/hnp component */
        if (NULL == (jdata = prte_get_job_data_object(PRTE_PROC_MY_NAME->jobid))) {
            prte_output(0, "ucx ==> init() Error! prte_get_job_data_object() failed!\n");
@@ -154,11 +286,19 @@ static int grpcomm_ucx_lateinit(void)
        }
 
         /* now filter the list through any -host specification */
-        if (prte_get_attribute(&dapp->attributes, PRTE_APP_ROOT_NODE, (void**)&root_node_address, PRTE_STRING)) {
+        if (prte_get_attribute(&dapp->attributes, PRTE_APP_ROOT_NODE,
+                (void**)&root_node_address, PRTE_STRING)) {
             prte_output(0, "ucx ==> init() PRTE root node: %s\n", root_node_address);
         }
+#endif
 
         printf("root_node_address = %s\n", root_node_address);
+
+        if (PRTE_PROC_MY_NAME->vpid == 0) {
+            // ==> root
+            root_node_address = NULL;
+            *is_root_node = 1;
+        }
 
         /* TODO: Update the IP address of the root */
         //root_name = "127.0.0.1";
@@ -172,7 +312,8 @@ static int grpcomm_ucx_lateinit(void)
                 .sin_family            = AF_INET,
                 .sin_port              = htons(server_port),
                 .sin_addr              = {
-                        .s_addr        = root_name ? inet_addr(root_name) : INADDR_ANY
+                        .s_addr        = root_node_address ?
+                                             inet_addr(root_node_address) : INADDR_ANY
                 }
         };
         ucs_sock_addr_t server_address = {
@@ -185,16 +326,13 @@ static int grpcomm_ucx_lateinit(void)
         server_address.addr = (struct sockaddr *)&sock_addr;
         server_address.addrlen = sizeof(struct sockaddr);
 
-        printf("Calling ucg_minimal_init()...\n");
+        prte_output(0, "Calling ucg_minimal_init()...\n");
 
         status = ucg_minimal_init(&g_ucg_context, &server_address, num_connections,
-                                  root_node_address ? UCG_MINIMAL_FLAG_SERVER : 0);
+                     root_node_address ? UCG_MINIMAL_FLAG_SERVER : 0);
         CHKERR_JUMP(status != UCS_OK, "ucg_minimal_init\n", err_cleanup);
 
-        printf("ucg_minimal_init() - done\n");
-
-        //status = ucg_minimal_broadcast(&ctx, test_string, sizeof(test_string_length));
-        //CHKERR_JUMP(status != UCS_OK, "ucg_minimal_broadcast\n", err_finalize);
+        prte_output(0, "ucg_minimal_init() - done\n");
 
         ret = PRTE_SUCCESS;
 
@@ -217,6 +355,8 @@ grpcomm_ucx_lateinit_done_no_error:
  */
 static int init(void)
 {
+    int err;
+
    /* prte_list_item_t *item, *next;
     prte_list_foreach_safe(foo, next, list, prte_list_item_t) {
        interface = foo
@@ -239,6 +379,13 @@ static int init(void)
                             PRTE_RML_TAG_COLL_RELEASE,
                             PRTE_RML_PERSISTENT,
                             barrier_release, NULL);
+
+    /* Create the UCX Bcast thread */
+    err = pthread_create(&grpcomm_ucx_bcast_tid, NULL,
+              &grpcomm_ucx_bcast_thread, NULL);
+    if (err != 0) {
+        prte_output(0, "Error! can't create grpcomm_ucx_bcast thread :[%s]", strerror(err));
+    }
 
     return PRTE_SUCCESS;
 }

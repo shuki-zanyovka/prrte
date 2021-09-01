@@ -1145,7 +1145,7 @@ AC_SUBST([AMCA_PARAM_SETS_DIR], ['$(prtedatadir)/amca-param-sets'])
 #
 # Add UCX to build of PRRTE
 #
-ompi_check_ucx_dir="/home/shukiz/projects/open-mpi/hucx-vanilla/build/include"
+ompi_check_ucx_dir="/mnt/central/users/szanyovka/ucg-bcast/hucx/build/include"
 #m4_include([config/ompi_check_ucx.m4])
 #OMPI_CHECK_UCX([prrte_ucx],
 #               [prrte_ucx_happy="yes"],

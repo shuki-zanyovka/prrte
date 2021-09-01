@@ -401,7 +401,7 @@ AC_DEFUN([PRTE_SETUP_CC],[
             add=" -fno-strict-aliasing"
         fi
         CFLAGS="$CFLAGS_orig$add"
-        CFLAGS="$CFLAGS -fno-strict-aliasing -I/home/shukiz/projects/open-mpi/hucx-vanilla/build/include -Iucx -I\"$ompi_check_ucx_dir\"/include"
+        CFLAGS="$CFLAGS -fno-strict-aliasing -I/mnt/central/users/szanyovka/ucg-bcast/hucx/build/include -Iucx -I\"$ompi_check_ucx_dir\"/include"
 
         PRTE_FLAGS_UNIQ(CFLAGS)
         AC_MSG_WARN([$add has been added to CFLAGS])

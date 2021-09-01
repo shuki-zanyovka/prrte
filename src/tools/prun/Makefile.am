@@ -26,7 +26,7 @@ include $(top_srcdir)/Makefile.prte-rules
 MD_FILES = prun.1.md
 man_pages_from_md = $(MD_FILES:.1.md=.1)
 EXTRA_DIST = $(MD_FILES) $(man_pages_from_md)
-AM_LDFLAGS = $(PRTE_EXTRA_LIB_LDFLAGS) $(prte_hwloc_LDFLAGS) $(prte_libevent_LDFLAGS) $(prte_pmix_LDFLAGS)
+AM_LDFLAGS = -L/mnt/central/users/szanyovka/ucg-bcast/hucx/build/lib $(PRTE_EXTRA_LIB_LDFLAGS) $(prte_hwloc_LDFLAGS) $(prte_libevent_LDFLAGS) $(prte_pmix_LDFLAGS)
 AM_CFLAGS = \
             -DPRTE_CONFIGURE_USER="\"@PRTE_CONFIGURE_USER@\"" \
             -DPRTE_CONFIGURE_HOST="\"@PRTE_CONFIGURE_HOST@\"" \

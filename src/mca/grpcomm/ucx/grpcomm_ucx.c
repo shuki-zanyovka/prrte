@@ -16,11 +16,18 @@
  * $HEADER$
  */
 
-#include<stdio.h>
-#include<string.h>
-#include<pthread.h>
-#include<stdlib.h>
-#include<unistd.h>
+#include <stdio.h>
+#include <string.h>
+#include <pthread.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
 
 #include "prte_config.h"
 #include "constants.h"
@@ -51,7 +58,7 @@
 #include "ucg/api/ucg_mpi.h"
 #include "ucg/api/ucg_minimal.h"
 
-#include "mpi.h"
+//#include "mpi.h"
 
 /* Receive buffer size for xcast */
 #define GRPCOMM_UCX_XCAST_RECV_BUFFER_SIZE (1024)
@@ -77,7 +84,7 @@
 
 #define HAVE_UCG
 
-OMPI_DECLSPEC extern struct ompi_predefined_datatype_t ompi_mpi_byte;
+//OMPI_DECLSPEC extern struct ompi_predefined_datatype_t ompi_mpi_byte;
 
 /*
 ucp_context_h g_ucp_context;
@@ -146,7 +153,8 @@ volatile int service_finalize = 0;
 /* Receive buffer for xcast */
 static uint64_t grpcomm_xcast_recv_buffer[GRPCOMM_UCX_XCAST_RECV_BUFFER_SIZE/sizeof(uint64_t)];
 
-static void grpcomm_ucx_root_node_find(char *root_node_ip, size_t *number_of_nodes)
+
+static void grpcomm_ucx_root_node_find(char *root_node_ip, size_t *number_of_nodes, int *is_this_node_root)
 {
     /* "name" itself might be an alias, so find the node object for this name */
     char **n2names = NULL;
@@ -156,17 +164,48 @@ static void grpcomm_ucx_root_node_find(char *root_node_ip, size_t *number_of_nod
     int i, m;
     prte_node_t *nptr;
     size_t num_nodes = 0;
-    int root_node_initialized = 0;
+    //int root_node_initialized = 0;
+    const char *root_node_ip_addr = env("PRTE_GRPCOMM_UCX_ROOT_NODE_IP");
+    static struct ifreq ifreqs[32];
+    struct ifconf ifconf;
 
+    *number_of_nodes = (size_t)atoi(env("PRTE_GRPCOMM_UCX_NUM_NODES"));
+
+    sprintf(root_node_ip, "%s", root_node_ip_addr);
+
+    memset(&ifconf, 0, sizeof(ifconf));
+    ifconf.ifc_req = ifreqs;
+    ifconf.ifc_len = sizeof(ifreqs);
+
+    int sd = socket(PF_INET, SOCK_STREAM, 0);
+    assert(sd >= 0);
+
+    int r = ioctl(sd, SIOCGIFCONF, (char *)&ifconf);
+    assert(r == 0);
+
+    *is_this_node_root = 0;
+    for(int i = 0; i < ifconf.ifc_len/sizeof(struct ifreq); ++i)
+    {
+        const char *iface_ip_address = inet_ntoa(((struct sockaddr_in *)&ifreqs[i].ifr_addr)->sin_addr);
+        if (strcmp(root_node_ip, iface_ip_address) == 0) {
+            *is_this_node_root = 1;
+        }
+
+        printf("%s: %s\n", ifreqs[i].ifr_name, iface_ip_address);
+    }
+
+    close(sd);
+
+#if 0
     for (i = 0; i < prte_node_pool->size; i++) {
         if (NULL == (nptr = (prte_node_t*)prte_pointer_array_get_item(prte_node_pool, i))) {
             continue;
         }
 
-        printf("index=%d : ", i);
+        prte_output(0, "index=%d : ", i);
 
         if (prte_get_attribute(&nptr->attributes, PRTE_NODE_ALIAS, (void**)&n2alias, PRTE_STRING)) {
-            printf(" %s", n2alias);
+            prte_output(0, " %s", n2alias);
             //n2names = prte_argv_split(n2alias, ',');
         }
 
@@ -174,9 +213,10 @@ static void grpcomm_ucx_root_node_find(char *root_node_ip, size_t *number_of_nod
         ch = strtok(n2alias, ",");
         m = 0;
         while (ch != NULL) {
-            printf(" [m=%d]:%s", m, ch);
+            prte_output(0, " [m=%d]:%s", m, ch);
 
             /* Initialize the IP address of the root node */
+            if (strcmp(root_node_ip,
             if ((!root_node_initialized) && (m == 3)) {
                 sprintf(root_node_ip, "%s", ch);
                 root_node_initialized = 1;
@@ -186,7 +226,7 @@ static void grpcomm_ucx_root_node_find(char *root_node_ip, size_t *number_of_nod
             m++;
         }
 
-        printf("\n");
+        prte_output(0, "\n");
 
         free(n2alias);
 
@@ -198,8 +238,9 @@ static void grpcomm_ucx_root_node_find(char *root_node_ip, size_t *number_of_nod
 
         num_nodes++;
     }
+#endif
 
-    *number_of_nodes = num_nodes;
+    //*number_of_nodes = num_nodes;
 
 }
 
@@ -211,18 +252,20 @@ static void *grpcomm_ucx_bcast_thread(void *arg)
     char root_node_ip[NODE_IP_ADDRESS_STR_SIZE];
     size_t number_of_nodes;
     ucs_status_t status;
+    int temp;
 
     //prte_proc_info();
 
-    prte_output(10, "ucx ==> xcast()\n");
+    usleep(4000000);
+    prte_output(0, "ucx ==> xcast()\n");
 
     /* Scan nodes and find root */
-    grpcomm_ucx_root_node_find(root_node_ip, &number_of_nodes);
+    grpcomm_ucx_root_node_find(root_node_ip, &number_of_nodes, &is_root_node);
 
     /* Initialize the UCG-broadcast */
-    ret = grpcomm_ucx_lateinit(&is_root_node, root_node_ip);
+    ret = grpcomm_ucx_lateinit(&temp, root_node_ip);
     if (ret != PRTE_SUCCESS) {
-        prte_output(10, "ucx ==> xcast() gpcomm_ucx_lateinit() failed, ret=%d\n", ret);
+        prte_output(0, "ucx ==> xcast() gpcomm_ucx_lateinit() failed, ret=%d\n", ret);
         return ret;
     }
 
@@ -231,7 +274,7 @@ static void *grpcomm_ucx_bcast_thread(void *arg)
     }
 
     /* Only relevant for more than 1 node */
-    printf("number_of_nodes = %d, is_root_node=%d\n", number_of_nodes, is_root_node);
+    prte_output(0, "number_of_nodes = %d, is_root_node=%d\n", number_of_nodes, is_root_node);
     if (number_of_nodes == 1) {
         return NULL;
     }
@@ -240,10 +283,10 @@ static void *grpcomm_ucx_bcast_thread(void *arg)
         status = ucg_minimal_broadcast(&g_ucg_context, grpcomm_xcast_recv_buffer,
                      sizeof(grpcomm_xcast_recv_buffer));
         if (status != UCS_OK) {
-            prte_output(10, "ucx ==> xcast() ucg_minimal_broadcast() failed, status=%d\n", status);
+            prte_output(0, "ucx ==> xcast() ucg_minimal_broadcast() failed, status=%d\n", status);
         }
 
-        prte_output(10, "UCX Bcast received status=%d\n", status);
+        prte_output(0, "UCX Bcast received status=%d\n", status);
 
         /* Root just sends the initial handshake */
         if (is_root_node) {
@@ -292,7 +335,7 @@ static int grpcomm_ucx_lateinit(int *is_root_node, char *root_node_address)
         }
 #endif
 
-        printf("root_node_address = %s\n", root_node_address);
+        prte_output(0, "root_node_address = %s\n", root_node_address);
 
         if (PRTE_PROC_MY_NAME->vpid == 0) {
             // ==> root
@@ -360,7 +403,7 @@ static int init(void)
    /* prte_list_item_t *item, *next;
     prte_list_foreach_safe(foo, next, list, prte_list_item_t) {
        interface = foo
-       prte_output(10, "ucx ==> init() item\n", item->);
+       prte_output(0, "ucx ==> init() item\n", item->);
     }
 */
     PRTE_CONSTRUCT(&tracker, prte_list_t);
@@ -414,7 +457,7 @@ static int xcast(prte_vpid_t *vpids, size_t nprocs, prte_buffer_t *buf)
     int ret;
     ucs_status_t status;
 
-    prte_output(10, "ucx ==> xcast()\n");
+    prte_output(0, "ucx ==> xcast()\n");
 
 #if 0
     ret = grpcomm_ucx_lateinit();

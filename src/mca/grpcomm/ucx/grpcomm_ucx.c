@@ -135,14 +135,13 @@ static void barrier_release(int status, prte_process_name_t* sender,
                             prte_buffer_t* buffer, prte_rml_tag_t tag,
                             void* cbdata);
 
-static int grpcomm_ucx_lateinit(int *is_root_node, char *root_node_address);
+static int grpcomm_ucx_lateinit(int is_root_node, char *root_node_address, unsigned num_connections);
 
 /* internal variables */
 static prte_list_t tracker;
 
 static uint16_t server_port     = 13437;
 static long test_string_length  = 64;
-static unsigned num_connections = 1;
 
 /* Broadcast thread id */
 static pthread_t grpcomm_ucx_bcast_tid;
@@ -165,13 +164,17 @@ static void grpcomm_ucx_root_node_find(char *root_node_ip, size_t *number_of_nod
     prte_node_t *nptr;
     size_t num_nodes = 0;
     //int root_node_initialized = 0;
-    const char *root_node_ip_addr = env("PRTE_GRPCOMM_UCX_ROOT_NODE_IP");
+    const char *root_node_ip_addr = "192.168.20.108"; //getenv("PRTE_GRPCOMM_UCX_ROOT_NODE_IP");
     static struct ifreq ifreqs[32];
     struct ifconf ifconf;
 
-    *number_of_nodes = (size_t)atoi(env("PRTE_GRPCOMM_UCX_NUM_NODES"));
+    prte_output(0, "root_node_find(1), root_node_ip_addr=%p\n", root_node_ip_addr);
+
+    *number_of_nodes = (size_t)atoi("2" /*getenv("PRTE_GRPCOMM_UCX_NUM_NODES")*/);
 
     sprintf(root_node_ip, "%s", root_node_ip_addr);
+
+        prte_output(0, "root_node_find(2)\n");
 
     memset(&ifconf, 0, sizeof(ifconf));
     ifconf.ifc_req = ifreqs;
@@ -183,6 +186,8 @@ static void grpcomm_ucx_root_node_find(char *root_node_ip, size_t *number_of_nod
     int r = ioctl(sd, SIOCGIFCONF, (char *)&ifconf);
     assert(r == 0);
 
+        prte_output(0, "root_node_find(3)\n");
+
     *is_this_node_root = 0;
     for(int i = 0; i < ifconf.ifc_len/sizeof(struct ifreq); ++i)
     {
@@ -193,6 +198,8 @@ static void grpcomm_ucx_root_node_find(char *root_node_ip, size_t *number_of_nod
 
         printf("%s: %s\n", ifreqs[i].ifr_name, iface_ip_address);
     }
+
+        prte_output(0, "root_node_find(4)\n");
 
     close(sd);
 
@@ -256,14 +263,20 @@ static void *grpcomm_ucx_bcast_thread(void *arg)
 
     //prte_proc_info();
 
-    usleep(4000000);
+    //usleep(1000000);
     prte_output(0, "ucx ==> xcast()\n");
 
     /* Scan nodes and find root */
     grpcomm_ucx_root_node_find(root_node_ip, &number_of_nodes, &is_root_node);
 
+
+    prte_output(0, "ucx ==> xcast(), root_node_ip = %s, number_of_nodes = %u, is_root_node=%d\n",
+           root_node_ip, number_of_nodes, is_root_node);
+
+    prte_output(0, "ucx ==> xcast(1)\n");
+
     /* Initialize the UCG-broadcast */
-    ret = grpcomm_ucx_lateinit(&temp, root_node_ip);
+    ret = grpcomm_ucx_lateinit(is_root_node, root_node_ip, (number_of_nodes - 1));
     if (ret != PRTE_SUCCESS) {
         prte_output(0, "ucx ==> xcast() gpcomm_ucx_lateinit() failed, ret=%d\n", ret);
         return ret;
@@ -273,20 +286,28 @@ static void *grpcomm_ucx_bcast_thread(void *arg)
         snprintf(grpcomm_xcast_recv_buffer, sizeof(grpcomm_xcast_recv_buffer), "%s", BCAST_HANDSHAKE_STRING);
     }
 
+    prte_output(0, "ucx ==> xcast(2)\n");
+
     /* Only relevant for more than 1 node */
     prte_output(0, "number_of_nodes = %d, is_root_node=%d\n", number_of_nodes, is_root_node);
     if (number_of_nodes == 1) {
         return NULL;
     }
 
+    prte_output(0, "ucx ==> xcast(3)\n");
+
     while (!service_finalize) {
+        prte_output(0, "Calling UCX Bcast...\n");
+
         status = ucg_minimal_broadcast(&g_ucg_context, grpcomm_xcast_recv_buffer,
                      sizeof(grpcomm_xcast_recv_buffer));
         if (status != UCS_OK) {
             prte_output(0, "ucx ==> xcast() ucg_minimal_broadcast() failed, status=%d\n", status);
         }
 
-        prte_output(0, "UCX Bcast received status=%d\n", status);
+       grpcomm_xcast_recv_buffer[30] = 0x00;
+        prte_output(0, "UCX Bcast received status=%d, received string=%s\n", status,
+                       grpcomm_xcast_recv_buffer);
 
         /* Root just sends the initial handshake */
         if (is_root_node) {
@@ -301,15 +322,13 @@ static void grpcomm_ucg_finalize(void)
 {
 }
 
-static int grpcomm_ucx_lateinit(int *is_root_node, char *root_node_address)
+static int grpcomm_ucx_lateinit(int is_root_node, char *root_node_address, unsigned num_connections)
 {
     int ret = PRTE_ERROR;
     ucs_sock_addr_t server_address = { 0 };
     prte_job_t *jdata;
     prte_app_context_t *dapp;
     ucs_status_t status;
-
-    *is_root_node = 0;
 
     if (!grpcomm_ucx_lateinit_done) {
         prte_output(0, "ucx ==> init() PRTE_NAME_PRINT(PRTE_PROC_MY_NAME)=%s\n",
@@ -337,11 +356,10 @@ static int grpcomm_ucx_lateinit(int *is_root_node, char *root_node_address)
 
         prte_output(0, "root_node_address = %s\n", root_node_address);
 
-        if (PRTE_PROC_MY_NAME->vpid == 0) {
-            // ==> root
-            root_node_address = NULL;
-            *is_root_node = 1;
-        }
+       // if (is_root_node) /*(PRTE_PROC_MY_NAME->vpid == 0)*/ {
+       //else {
+          // usleep(100000);
+       //}
 
         /* TODO: Update the IP address of the root */
         //root_name = "127.0.0.1";
@@ -372,7 +390,7 @@ static int grpcomm_ucx_lateinit(int *is_root_node, char *root_node_address)
         prte_output(0, "Calling ucg_minimal_init()...\n");
 
         status = ucg_minimal_init(&g_ucg_context, &server_address, num_connections,
-                     root_node_address ? UCG_MINIMAL_FLAG_SERVER : 0);
+                     is_root_node ? UCG_MINIMAL_FLAG_SERVER : 0);
         CHKERR_JUMP(status != UCS_OK, "ucg_minimal_init\n", err_cleanup);
 
         prte_output(0, "ucg_minimal_init() - done\n");

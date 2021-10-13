@@ -61,7 +61,10 @@
 //#include "mpi.h"
 
 /* Receive buffer size for xcast */
-#define GRPCOMM_UCX_XCAST_RECV_BUFFER_SIZE (1024)
+#define GRPCOMM_UCX_XCAST_RECV_BUFFER_SIZE (1024*1024)
+
+/* Actual send size offset in the large buffer (we send 1024 bytes of Bcast buffer) */
+#define XCAST_BUFFER_SEND_SIZE_OFFSET (GRPCOMM_UCX_XCAST_RECV_BUFFER_SIZE - sizeof(size_t))
 
 /* UCX Bcast Handshake string */
 #define BCAST_HANDSHAKE_STRING "UCG_BCAST_HANDSHAKE"
@@ -95,6 +98,9 @@ size_t        g_address_length;
 
 /* internal variables */
 static prte_list_t tracker;
+
+/* Bcast handshake successful */
+static volatile int grpcomm_ucx_bcast_handshake_success = 0;
 
 /* Global root node address (used for broadcast over UCX) */
 static int grpcomm_ucx_lateinit_done = 0;
@@ -152,6 +158,8 @@ volatile int service_finalize = 0;
 /* Receive buffer for xcast */
 static uint64_t grpcomm_xcast_recv_buffer[GRPCOMM_UCX_XCAST_RECV_BUFFER_SIZE/sizeof(uint64_t)];
 
+/* Send buffer for xcast */
+static uint64_t grpcomm_xcast_send_buffer[GRPCOMM_UCX_XCAST_RECV_BUFFER_SIZE/sizeof(uint64_t)];
 
 static void grpcomm_ucx_root_node_find(char *root_node_ip, size_t *number_of_nodes, int *is_this_node_root)
 {
@@ -164,7 +172,7 @@ static void grpcomm_ucx_root_node_find(char *root_node_ip, size_t *number_of_nod
     prte_node_t *nptr;
     size_t num_nodes = 0;
     //int root_node_initialized = 0;
-    const char *root_node_ip_addr = "192.168.20.108"; //getenv("PRTE_GRPCOMM_UCX_ROOT_NODE_IP");
+    const char *root_node_ip_addr = "192.168.20.100"; //getenv("PRTE_GRPCOMM_UCX_ROOT_NODE_IP");
     static struct ifreq ifreqs[32];
     struct ifconf ifconf;
 
@@ -174,7 +182,7 @@ static void grpcomm_ucx_root_node_find(char *root_node_ip, size_t *number_of_nod
 
     sprintf(root_node_ip, "%s", root_node_ip_addr);
 
-        prte_output(0, "root_node_find(2)\n");
+    prte_output(0, "root_node_find(2)\n");
 
     memset(&ifconf, 0, sizeof(ifconf));
     ifconf.ifc_req = ifreqs;
@@ -199,7 +207,7 @@ static void grpcomm_ucx_root_node_find(char *root_node_ip, size_t *number_of_nod
         printf("%s: %s\n", ifreqs[i].ifr_name, iface_ip_address);
     }
 
-        prte_output(0, "root_node_find(4)\n");
+    prte_output(0, "root_node_find(4)\n");
 
     close(sd);
 
@@ -268,8 +276,6 @@ static void *grpcomm_ucx_bcast_thread(void *arg)
 
     /* Scan nodes and find root */
     grpcomm_ucx_root_node_find(root_node_ip, &number_of_nodes, &is_root_node);
-
-
     prte_output(0, "ucx ==> xcast(), root_node_ip = %s, number_of_nodes = %u, is_root_node=%d\n",
            root_node_ip, number_of_nodes, is_root_node);
 
@@ -305,12 +311,32 @@ static void *grpcomm_ucx_bcast_thread(void *arg)
             prte_output(0, "ucx ==> xcast() ucg_minimal_broadcast() failed, status=%d\n", status);
         }
 
+        prte_output(0, "Bcast successful!\n");
+
+        if (grpcomm_ucx_bcast_handshake_success == 0) {
+            /* Bcast handshake success */
+            grpcomm_ucx_bcast_handshake_success = 1;
+        }
+        else {
+            /* now pass the relay buffer to myself for processing - don't
+             * inject it into the RML system via send as that will compete
+             * with the relay messages down in the OOB. Instead, pass it
+             * ucxly to the RML message processor */
+            size_t recv_size = *(size_t *)(&grpcomm_xcast_recv_buffer[XCAST_BUFFER_SEND_SIZE_OFFSET]);
+            prte_output(0, "Bcast thread - Posting received buffer to user, size=%zu\n", recv_size);
+            PRTE_RML_POST_MESSAGE(PRTE_PROC_MY_NAME, PRTE_RML_TAG_XCAST, 1,
+                    grpcomm_xcast_recv_buffer, recv_size);
+        }
+
+#if 0 // debug code
        grpcomm_xcast_recv_buffer[30] = 0x00;
         prte_output(0, "UCX Bcast received status=%d, received string=%s\n", status,
                        grpcomm_xcast_recv_buffer);
+#endif
 
         /* Root just sends the initial handshake */
         if (is_root_node) {
+            prte_output(0, "Bcast thread: Root node ==> exiting thread...\n");
             return NULL;
         }
     }
@@ -475,21 +501,7 @@ static int xcast(prte_vpid_t *vpids, size_t nprocs, prte_buffer_t *buf)
     int ret;
     ucs_status_t status;
 
-    prte_output(0, "ucx ==> xcast()\n");
-
-#if 0
-    ret = grpcomm_ucx_lateinit();
-    if (ret != PRTE_SUCCESS) {
-        prte_output(10, "ucx ==> xcast() gpcomm_ucx_lateinit() failed, ret=%d\n", ret);
-        return ret;
-    }
-
-
-    status = ucg_minimal_broadcast(&g_ucg_context, buf->base_ptr, buf->bytes_used);
-    if (status != UCS_OK) {
-        prte_output(10, "ucx ==> xcast() ucg_minimal_broadcast() failed, status=%d\n", status);
-    }
-#endif
+    prte_output(0, "grpcomm_ucx ==> %s entry, nprocs=%zu\n", __func__, nprocs);
 
     /* send it to the HNP (could be myself) for relay */
     PRTE_RETAIN(buf);  // we'll let the RML release it
@@ -507,6 +519,8 @@ static int allgather(prte_grpcomm_coll_t *coll,
 {
     int rc;
     prte_buffer_t *relay;
+
+    prte_output(0, "grpcomm_ucx ==> %s entry\n", __func__);
 
     PRTE_OUTPUT_VERBOSE((1, prte_grpcomm_base_framework.framework_output,
                          "%s grpcomm:ucx: allgather",
@@ -555,6 +569,8 @@ static void allgather_recv(int status, prte_process_name_t* sender,
     prte_grpcomm_signature_t *sig;
     prte_buffer_t *reply;
     prte_grpcomm_coll_t *coll;
+
+    prte_output(0, "grpcomm_ucx ==> %s entry, tag=%u\n", __func__, tag);
 
     PRTE_OUTPUT_VERBOSE((1, prte_grpcomm_base_framework.framework_output,
                          "%s grpcomm:ucx allgather recvd from %s",
@@ -675,29 +691,6 @@ static void xcast_recv(int status, prte_process_name_t* sender,
                        prte_buffer_t* buffer, prte_rml_tag_t tg,
                        void* cbdata)
 {
-#if 0
-
-    ucs_status_t st;
-    int ret;
-
-    prte_output(0, "ucx ==> xcast()\n");
-
-    ret = grpcomm_ucx_lateinit();
-    if (ret != PRTE_SUCCESS) {
-        prte_output(10, "ucx ==> xcast() gpcomm_ucx_lateinit() failed, ret=%d\n", ret);
-        return;
-    }
-
-    prte_output(0, "ucx ==> xcast(2)\n");
-
-    st = ucg_minimal_broadcast(&g_ucg_context, buffer->base_ptr, buffer->bytes_allocated);
-    if (status != UCS_OK) {
-        prte_output(10, "xcast_recv(): ucg_minimal_broadcast() failed, status=%d\n", status);
-    }
-#endif
-
-    prte_output(0, "ucx ==> xcast(3)\n");
-
     prte_list_item_t *item;
     prte_namelist_t *nm;
     int ret, cnt;
@@ -712,6 +705,9 @@ static void xcast_recv(int status, prte_process_name_t* sender,
     prte_rml_tag_t tag;
     size_t inlen, cmplen;
     uint8_t *packed_data, *cmpdata;
+    ucs_status_t st;
+
+    prte_output(0, "grpcomm_ucx ==> %s entry, tag=%u\n", __func__, tg);
 
     PRTE_OUTPUT_VERBOSE((1, prte_grpcomm_base_framework.framework_output,
                          "%s grpcomm:ucx:xcast:recv: with %d bytes",
@@ -859,13 +855,35 @@ static void xcast_recv(int status, prte_process_name_t* sender,
                 PRTE_FORCED_TERMINATE(PRTE_ERR_UNREACH);
                 continue;
             }
-            if (PRTE_SUCCESS != (ret = prte_rml.send_buffer_nb(&nm->name, rly, PRTE_RML_TAG_XCAST,
-                                                               prte_rml_send_callback, NULL))) {
-                PRTE_ERROR_LOG(ret);
-                PRTE_RELEASE(rly);
-                PRTE_RELEASE(item);
-                PRTE_FORCED_TERMINATE(PRTE_ERR_UNREACH);
-                continue;
+
+            if (grpcomm_ucx_bcast_handshake_success) {
+                /* Prepare send buffer for broadcast (we always broadcast the complete buffer size) */
+                assert(rly->bytes_used > GRPCOMM_UCX_XCAST_RECV_BUFFER_SIZE);
+                memcpy(grpcomm_xcast_send_buffer, rly->base_ptr, rly->bytes_used);
+                *(size_t *)(&grpcomm_xcast_send_buffer[XCAST_BUFFER_SEND_SIZE_OFFSET]) = rly->bytes_used;
+
+                prte_output(0, "ucx ==> xcast_recv() Preparing Bcast: bytes_used=%zu\n", rly->bytes_used);
+
+                st = ucg_minimal_broadcast(&g_ucg_context, grpcomm_xcast_send_buffer, GRPCOMM_UCX_XCAST_RECV_BUFFER_SIZE);
+                if (st != UCS_OK) {
+                    prte_output(10, "xcast_recv(): ucg_minimal_broadcast() failed, status=%d\n", st);
+
+                    PRTE_ERROR_LOG(ret);
+                    PRTE_RELEASE(rly);
+                    PRTE_RELEASE(item);
+                    PRTE_FORCED_TERMINATE(PRTE_ERR_UNREACH);
+                    continue;
+                }
+            }
+            else {
+                if (PRTE_SUCCESS != (ret = prte_rml.send_buffer_nb(&nm->name, rly, PRTE_RML_TAG_XCAST,
+                                                                   prte_rml_send_callback, NULL))) {
+                    PRTE_ERROR_LOG(ret);
+                    PRTE_RELEASE(rly);
+                    PRTE_RELEASE(item);
+                    PRTE_FORCED_TERMINATE(PRTE_ERR_UNREACH);
+                    continue;
+                }
             }
             PRTE_RELEASE(item);
         }
@@ -900,6 +918,8 @@ static void barrier_release(int status, prte_process_name_t* sender,
     int rc, ret, mode;
     prte_grpcomm_signature_t *sig;
     prte_grpcomm_coll_t *coll;
+
+    prte_output(0, "grpcomm_ucx ==> %s entry, tag=%u\n", __func__, tag);
 
     PRTE_OUTPUT_VERBOSE((5, prte_grpcomm_base_framework.framework_output,
                          "%s grpcomm:ucx: barrier release called with %d bytes",
